@@ -1,0 +1,82 @@
+recomp
+
+#import init as base
+#import binary as bin
+#import mem
+#import io
+
+// Set this before using the parse function
+ra: mem.Allocator;
+
+struct Symbol {
+	name: string,
+	t: u32,
+}
+
+struct Module {
+	name: string,
+	syms: []Symbol,
+}
+
+struct Type {
+	tk: base.TypeKind,
+	name: string,
+	members: []Type, // only for structs
+}
+
+struct Info {
+	modules: []Module,
+	types: []Type,
+}
+
+parse_recomp_info :: fn(info: *u8, count: int) -> Info {
+	r := bin.make_reader(info, count);
+
+	// Read modules
+	module_count := bin.read_u32(&r);
+	modules := mem.make_slice(Module, @int module_count, &ra);
+	for i in module_count {
+		module_name := bin.read_string(&r, &ra);
+		
+		global_count := bin.read_u32(&r);
+		syms := mem.make_slice(Symbol, @int global_count, &ra);
+		for gi := 0; gi < @int global_count; gi += 1 {
+			sym_name := bin.read_string(&r, &ra);
+			sym_type := bin.read_u32(&r);
+			syms[gi] = Symbol { sym_name, sym_type };
+		}
+
+		modules[i] = Module {
+			name = module_name,
+			syms = syms
+		};
+	}
+
+	// Read type table
+	type_count := bin.read_u32(&r);
+	types := mem.make_slice(Type, @int type_count, &ra);
+	for i in type_count {
+		t := @base.TypeKind bin.read_u32(&r);
+		name := bin.read_string(&r, &ra);
+		members := []Type {};
+
+		if t == base.TypeKind.Struct {
+			mem_count := bin.read_u32(&r);
+			members = mem.make_slice(Type, @int mem_count, &ra);
+			for j in mem_count {
+				mem_t := @base.TypeKind bin.read_u32(&r);
+				mem_name := bin.read_string(&r, &ra);
+				members[j] = Type { mem_t, mem_name, []Type{} };
+			}
+		}
+
+		types[i] = Type {
+			tk = t,
+			name = name,
+			members = members,
+		};
+	}
+
+	return Info { modules, types };
+}
+

@@ -1,0 +1,28 @@
+build
+
+#import compile as c
+#import array as arr
+#import str
+#import mem
+
+base_path :: "/home/vasko/programming/recomp-lsp/src/";
+json :: "/home/vasko/programming/rcpJSON/src/json.rcp";
+
+files :: []string { "main.rcp", "binary.rcp", "recomp_info.rcp" };
+
+compile :: fn() -> c.CompileInfo {
+	sa := mem.create_scratch(4096);
+	info := c.CompileInfo { files = arr.create(string, &sa) };
+	for f in files {
+		b := str.create(&sa);
+		str.append(&b, base_path);
+		str.append(&b, f);
+		src_file := str.from_builder(&b, &sa);
+		arr.add(&info.files, src_file);
+	}
+
+	arr.add(&info.files, json);
+
+	return info;
+}
+

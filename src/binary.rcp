@@ -1,0 +1,42 @@
+binary
+
+#import str
+#import mem
+
+struct Reader {
+	buf: *u8,
+	at: int,
+	size: int,
+}
+
+make_reader :: fn(buf: *u8, size: int) -> Reader {
+	return Reader {buf = buf, at = 0, size = size};
+}
+
+read_u8 :: fn(r: *Reader) -> u8 {
+	r := r;
+	res := r.buf[r.at];
+	r.at += 1;
+	return res;
+}
+
+read_u32 :: fn(r: *Reader) -> u32 {
+	num := @u32 0;
+	num |= (@u32 read_u8(r)) << 24;
+	num |= (@u32 read_u8(r)) << 16;
+	num |= (@u32 read_u8(r)) << 8;
+	num |= read_u8(r);
+	return num;
+}
+
+read_string :: fn(r: *Reader, alloc: *mem.Allocator) -> string {
+	r := r;
+	count := read_u32(r);
+	start := &r.buf[r.at];
+	b := str.create(alloc);
+	for i in count {
+		str.append_u8(&b, read_u8(r));
+	}
+	return str.from_builder(&b, alloc);
+}
+

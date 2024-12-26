@@ -1,0 +1,286 @@
+main
+
+#import init as base
+#import array as arr
+#import io
+#import mem
+#import os
+#import json
+#import str
+#import binary as bin
+#import recomp
+
+log_file := null;
+
+compile_info := recomp.Info {};
+build_file := "";
+ga := mem.Allocator{};
+
+write_log :: fn(str: string) {
+	if log_file != null {
+		file := ?log_file;
+		os.write(file, str.data, str.count);
+		os.write(file, "\n".data, 1);
+	}
+}
+
+respond :: fn(str: string) {
+	io.print("Content-Length: %\r\n\r\n", str.count);
+	io.print("%", str);
+	write_log("Responded");
+	write_log(str);
+}
+
+
+system :: fn #foreign(cmd: *u8) -> int;
+
+is_whitespace :: fn(c: u32) -> bool {
+    return c == '\n' || c == '\r' || c == '\t' || c == ' ';
+}
+
+get_completion_start :: fn(f_buf: []u8, line: int, char: int) -> string {
+	f_buf := f_buf;
+	at := 0;
+	at_line := 1;
+	for at_line < line {
+		for f_buf[at] != '\n' {
+			at += 1;
+		}
+		at += 1;
+		at_line += 1;
+	}
+	at += char;
+	end := at;
+	start := end-1;
+	for !is_whitespace(f_buf[start]) { start -= 1; }
+	start += 1;
+	return string { end - start, &f_buf[start] };
+}
+
+remove_prefix :: fn(uri: string) -> string {
+	uri_prefix := "file:\\/\\/";
+	prefix := string { uri_prefix.count, uri.data };
+	if uri.count < uri_prefix.count return "";
+	if prefix != uri_prefix return "";
+
+	return string { uri.count - uri_prefix.count, uri.data + uri_prefix.count };
+}
+
+path_from_uri :: fn(uri: string, alloc: *mem.Allocator) -> string {
+	no_prefix := remove_prefix(uri);
+	b := str.create(alloc);
+	for c in no_prefix {
+		if c != '\\' str.append_u32(&b, c);
+	}
+
+	return str.from_builder(&b, alloc);
+}
+
+do_completion :: fn(uri: string, line: int, char: int, id: json.Value, alloc: *mem.Allocator) {
+	path := path_from_uri(uri, alloc);
+	if path.count == 0 return;
+	if compile_info.modules.count == 0 return;
+	// @TODO: decode %20 for spaces
+
+	write_log("TRY OPEN");
+	write_log(path);
+	file_ := os.open(path);
+	if file_ == null return;
+	write_log("OPENED");
+	file := ?file_;
+	defer os.close(file);
+	f_size := os.get_file_size(file);
+
+	f_buf := mem.make_slice(u8, f_size, alloc);
+	read := os.read(file, f_buf.data, f_size);
+	if read == 0 || read == -1 return;
+	write_log("READ");
+
+	suggestions := mem.make_slice(recomp.Module, 6, alloc);
+	suggestion_count := 0;
+	is_complete := false;
+
+	start := get_completion_start(f_buf, line, char);
+	write_log(start);
+	for m in compile_info.modules {
+		if m.name.count >= start.count {
+			comp := string { start.count, m.name.data };
+			if comp == start {
+				suggestions[suggestion_count] = m;
+				suggestion_count += 1;
+				if start.count == m.name.count is_complete = true;
+				if suggestion_count == 6 break;
+			}
+		}
+	}
+
+	main_obj := json.make_obj(alloc);
+	json.add_field(&main_obj, "jsonrpc", json.make_string("2.0"));
+	json.add_field(&main_obj, "id", id);
+
+	result := json.make_obj(alloc);
+	is_incomplete := json.make_bool(false);
+	json.add_field(&result, "isIncomplete", is_incomplete);
+
+	items := json.make_array(alloc);
+	for si in suggestion_count {
+		s := suggestions[si];
+		obj := json.make_obj(alloc);
+		json.add_field(&obj, "label", json.make_string(s.name)); // kind = module
+		json.add_field(&obj, "kind", json.make_integer(9)); // kind = module
+		json.add_item(&items, obj);
+	}
+
+	json.add_field(&result, "items", items);
+	json.add_field(&main_obj, "result", result);
+	str := json.print(main_obj, alloc);
+	respond(str);
+}
+
+get_recomp_info :: fn(build_file: string, alloc: *mem.Allocator) {
+	write_log(build_file);
+	b := str.create(alloc);
+	str.append(&b, "rcp --dump-info ");
+	str.append(&b, build_file);
+	cmd := str.from_builder(&b, alloc);
+	system(cmd.data);
+	write_log("Compiled");
+
+	file_ := os.open("rcp.dump");
+	if file_ == null {
+		return;
+	}
+	file := ?file_;
+	defer os.close(file);
+	write_log("Opened File");
+
+	size := os.get_file_size(file);
+	buf := mem.make_slice(u8, size, alloc);
+	read := os.read(file, buf.data, size);
+	write_log("Read Something");
+	if read == 0 || read == -1 {
+		write_log("Nothing");
+		return;
+	}
+
+	write_log("Parsing");
+	info := recomp.parse_recomp_info(buf.data, read);
+	if info.modules.count != 0 { 
+		write_log("DATA");
+		compile_info = info;
+	}
+	write_log("");
+}
+
+read_packet :: fn(alloc: *mem.Allocator) {
+	file_ := os.open("/home/vasko/programming/recomp-lsp/bin/log.txt");
+	if file_ == null {
+		io.println("os.open(\"log.txt\") failed");
+		return;
+	}
+	file := ?file_;
+	log_file = file_;
+	defer log_file = null;
+	defer os.close(file);
+
+	// Content Length
+	read := io.readln(alloc);
+
+	p := json.make_parser(read);
+
+    for !json.is_number(json.peek_char(&p)) {
+        json.next_char(&p);
+    }
+	v := json.parse_number(&p);
+	content_len := v.v.integer;
+
+	// Content Type, ignore for now
+	io.readln(alloc);
+
+	got_json := io.read(content_len, alloc);
+	
+	content := json.parse(got_json, alloc);
+
+	if content.t == json.Type.Invalid {
+		json_fail :: "Failed to parse json";
+		os.write(file, json_fail.data, json_fail.count);
+	}
+	field, success := json.get_obj_field(content, "method");
+	if !success return;
+
+	id, found_id := json.get_obj_field(content, "id");
+	if !found_id return;
+	
+	if field.t != json.Type.String return;
+
+	if field.v.str == "initialize" {
+		response := #embed_str "../init_response.json";
+		respond(response);
+		write_log("Sent response\n");
+
+		params, success := json.get_obj_field(content, "params");
+		if !success os.abort();
+		root_uri, found_root := json.get_obj_field(params, "rootUri");
+		if !found_root os.abort();
+		path := path_from_uri(root_uri.v.str, alloc);
+		b := str.create(alloc);
+		str.append(&b, path);
+		str.append(&b, "/build.rcp");
+		build_file = str.from_builder(&b, &ga);
+		mem.destroy_scratch(&recomp.ra);
+		recomp.ra = mem.create_scratch(mem.mb(8));
+		get_recomp_info(build_file, alloc);
+
+	} else if field.v.str == "initialized" {
+		write_log("INITTED\n");
+	} else if field.v.str == "shutdown" {
+		write_log("SHUTTING DOWN\n");
+		os.abort();
+	} else if field.v.str == "textDocument\\/completion" {
+		params, success := json.get_obj_field(content, "params");
+		if !success return;
+		textDocument, found_text := json.get_obj_field(params, "textDocument");
+		position, found_position := json.get_obj_field(params, "position");
+		if !found_text return;
+		if !found_position return;
+		line, found_line := json.get_obj_field(position, "line");
+		char, found_char := json.get_obj_field(position, "character");
+		if !found_line || !found_char return;
+		uri, found_uri := json.get_obj_field(textDocument, "uri");
+		if !found_uri return;
+		os.assert(uri.t == json.Type.String, "Invalid completion request");
+		os.assert(line.t == json.Type.Integer, "Invalid completion request");
+		os.assert(char.t == json.Type.Integer, "Invalid completion request");
+		do_completion(uri.v.str, line.v.integer, char.v.integer, id, alloc);
+	} else if field.v.str == "textDocument\\/didSave" {
+		mem.destroy_scratch(&recomp.ra);
+		recomp.ra = mem.create_scratch(mem.mb(8));
+		get_recomp_info(build_file, alloc);
+	} else {
+		unknown := "Unknown Method\n";
+		os.write(file, unknown.data, unknown.count);
+		os.write(file, field.v.str.data, field.v.str.count);
+	}
+
+
+}
+
+main :: fn() -> i32 {
+	system(c"rm /home/vasko/programming/recomp-lsp/bin/log.txt");
+	system(c"touch /home/vasko/programming/recomp-lsp/bin/log.txt");
+
+	recomp.ra = mem.create_scratch(mem.mb(8));
+	ga = mem.create_generic_allocator();;
+
+	scratch := mem.create_scratch(mem.mb(16));
+	start := (@*mem.ScratchContext(?scratch.data)).current;
+	defer mem.destroy_scratch(&scratch);
+	for {
+		read_packet(&scratch);
+		ctx := @*mem.ScratchContext(?scratch.data);
+		ctx.current = start;
+	}
+
+	return 0;
+}
+

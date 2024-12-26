@@ -1,0 +1,18 @@
+{
+	"jsonrpc": "2.0",
+	"id": 1,
+	"result": {
+		"capabilities": {
+			"textDocumentSync": 1,
+			"hoverProvider": false,
+			"completionProvider": {
+				"resolveProvider": true,
+				"triggerCharacters": [".", ":"]
+			}
+		},
+		"serverInfo": {
+			"name": "rcp-lsp",
+			"version": "0.0.1"
+		}
+	}
+}
