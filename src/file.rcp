@@ -1,0 +1,95 @@
+file
+
+#import mem
+#import os
+#import array as arr
+#import str
+
+struct File {
+	uri: string,
+	text: string,
+}
+
+files := []File{};
+ga: mem.Allocator;
+
+init :: fn() {
+	ga = mem.create_generic_allocator();
+	files = arr.create(File, &ga);
+}
+
+update_uri :: fn(uri: string, text: string, copy: bool) {
+	if copy {
+		uri := uri;
+		text := text;
+
+		uri_b := str.create(&ga);
+		text_b := str.create(&ga);
+		defer arr.free(&uri_b.data);
+		defer arr.free(&text_b.data);
+
+		str.append(&uri_b, uri);
+		str.append(&text_b, text);
+		uri = str.from_builder(&uri_b, &ga);
+		text = str.from_builder(&text_b, &ga);
+
+	}
+	for f in files {
+		if f.uri == uri {
+			if f.text.count != 0 {
+				ga.free(f.text.data, &ga);
+			}
+			files[i].text = text;
+			return;
+		}
+	}
+
+	arr.add(&files, File { uri, text });
+}
+
+get_text :: fn(uri: string) -> string {
+	for f in files {
+		if f.uri == uri {
+			if f.text.count == 0 break;
+			return f.text;
+		}
+	}
+
+	path := path_from_uri(uri, &ga);
+	file_ := os.open(path);
+	if file_ == null return "";
+	file := ?file_;
+	defer os.close(file);
+
+	f_size := os.get_file_size(file);
+	f_buf_ := ga.alloc( f_size, &ga );
+	if f_buf_ == null return "";
+	f_buf := ?f_buf_;
+	read := os.read(file, f_buf, f_size);
+	if read == 0 || read == -1 return "";
+
+	update_uri(uri, string { read, f_buf }, false);
+	return string { read, f_buf };
+}
+
+remove_prefix :: fn(uri: string) -> string {
+	uri_prefix := "file:\\/\\/";
+	prefix := string { uri_prefix.count, uri.data };
+	if uri.count < uri_prefix.count return "";
+	if prefix != uri_prefix return "";
+
+	return string { uri.count - uri_prefix.count, uri.data + uri_prefix.count };
+}
+
+path_from_uri :: fn(uri: string, alloc: *mem.Allocator) -> string {
+	no_prefix := remove_prefix(uri);
+	b := str.create(alloc);
+	for c in no_prefix {
+		if c != '\\' str.append_u32(&b, c);
+	}
+
+	return str.from_builder(&b, alloc);
+}
+
+
+
