@@ -4,6 +4,9 @@ recomp
 #import binary as bin
 #import mem
 #import io
+#import log
+#import str
+#import os
 
 // Set this before using the parse function
 ra: mem.Allocator;
@@ -79,4 +82,35 @@ parse_recomp_info :: fn(info: *u8, count: int) -> Info {
 
 	return Info { modules, types };
 }
+
+system :: fn #foreign(cmd: *u8) -> int;
+
+get_info :: fn(build_file: string, alloc: *mem.Allocator) -> Info {
+	b := str.create(alloc);
+	str.append(&b, "rcp --dump-info ");
+	str.append(&b, build_file);
+	cmd := str.from_builder(&b, alloc);
+	system(cmd.data);
+
+	file_ := os.open("rcp.dump");
+	if file_ == null {
+		return Info {};
+	}
+	file := ?file_;
+	defer os.close(file);
+	log.write("Parsing compiler info dump");
+
+	size := os.get_file_size(file);
+	buf := mem.make_slice(u8, size, alloc);
+	read := os.read(file, buf.data, size);
+	if read == 0 || read == -1 {
+		log.write("Failed to read compiler info dump");
+		return Info {};
+	}
+
+	info := parse_recomp_info(buf.data, read);
+	return info;
+}
+
+
 

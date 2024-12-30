@@ -1,0 +1,14 @@
+log
+
+#import os
+
+file := null;
+
+write :: fn(str: string) {
+	if file != null {
+		os.write(?file, str.data, str.count);
+		os.write(?file, c"\n", 1);
+	}
+}
+
+

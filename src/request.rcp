@@ -1,0 +1,217 @@
+request
+
+#import json
+#import mem
+#import log
+#import file
+#import os
+#import recomp
+#import io
+#import str
+
+should_close := false;
+
+compile_info := recomp.Info {};
+build_file := "";
+ga := mem.Allocator{};
+
+struct Context {
+	id: json.Value,
+	params: json.Value,
+}
+
+struct Request {
+	name: string,
+	proc: fn(ctx: Context, alloc: *mem.Allocator),
+}
+
+requests :: []Request {
+	Request { "initialize", initialize },
+	Request { "initialized", initialized },
+	Request { "shutdown", shutdown },
+	Request { "textDocument\\/completion", textdocument_completion},
+	Request { "textDocument\\/didSave", textdocument_didsave},
+	Request { "textDocument\\/didChange", textdocument_didchange},
+};
+
+respond :: fn(str: string) {
+	// @LEAK:
+	msg := io.sprint("Content-Length: %\r\n\r\n%", str.count, str);
+	stdout :: os.stdout();
+	os.write(stdout, msg.data, msg.count);
+	log.write("Responded");
+	log.write(msg);
+}
+
+handle :: fn(method: string, ctx: Context, alloc: *mem.Allocator) {
+	handled := false;
+	for r in requests {
+		if r.name == method {
+			handled = true;
+			r.proc(ctx, alloc);
+			break;
+		}
+	}
+	if !handled unhandled_request(method);
+}
+
+initialize :: fn(ctx: Context, alloc: *mem.Allocator) {
+	main_obj := json.make_obj(alloc);
+	json.add_field(&main_obj, "jsonrpc", json.make_string("2.0"));
+	json.add_field(&main_obj, "id", ctx.id);
+
+	result := json.make_obj(alloc);
+	capabilities := json.make_obj(alloc);
+	text_sync := json.make_obj(alloc);
+	provider := json.make_obj(alloc);
+
+	json.add_field(&provider, "triggerCharacters", json.make_array(alloc));
+	json.add_field(&text_sync, "openClose", json.make_bool(true));
+	json.add_field(&text_sync, "change", json.make_integer(1));
+	json.add_field(&capabilities, "textDocumentSync", text_sync);
+	json.add_field(&capabilities, "completionProvider", provider);
+	json.add_field(&result, "capabilities", capabilities);
+
+	json.add_field(&main_obj, "result", result);
+
+	response := json.print(main_obj, alloc);
+
+	respond(response);
+
+	root_uri, found_root := json.get_obj_field(ctx.params, "rootUri");
+	if !found_root os.abort();
+	path := file.path_from_uri(root_uri.v.str, alloc);
+	b := str.create(alloc);
+	str.append(&b, path);
+	str.append(&b, "/build.rcp");
+	build_file = str.from_builder(&b, &ga);
+	mem.destroy_scratch(&recomp.ra);
+	recomp.ra = mem.create_scratch(mem.mb(8));
+	recomp.get_info(build_file, alloc);
+}
+
+initialized :: fn(ctx: Context, alloc: *mem.Allocator) {
+	log.write("initialized!");
+}
+
+shutdown :: fn(ctx: Context, alloc: *mem.Allocator) {
+	log.write("Shutdown!");
+	should_close = true;
+}
+
+textdocument_completion :: fn(ctx: Context, alloc: *mem.Allocator) {
+	textDocument, found_text := json.get_obj_field(ctx.params, "textDocument");
+	position, found_position := json.get_obj_field(ctx.params, "position");
+	if !found_text || !found_position return;
+	line, found_line := json.get_obj_field(position, "line");
+	char, found_char := json.get_obj_field(position, "character");
+	uri, found_uri := json.get_obj_field(textDocument, "uri");
+	if !found_line || !found_char || !found_uri return;
+	do_completion(uri.v.str, line.v.integer, char.v.integer, ctx.id, alloc);
+}
+
+textdocument_didsave :: fn(ctx: Context, alloc: *mem.Allocator) {
+	log.write("FILE SAVED");
+	mem.destroy_scratch(&recomp.ra);
+	recomp.ra = mem.create_scratch(mem.mb(8));
+	info := recomp.get_info(build_file, alloc);
+	if info.modules.count != 0
+		compile_info = info;
+}
+
+textdocument_didchange :: fn(ctx: Context, alloc: *mem.Allocator) {
+	document, found_document := json.get_obj_field(ctx.params, "textDocument");
+	changes, found_changes := json.get_obj_field(ctx.params, "contentChanges");
+	if !found_document return;
+	if !found_changes return;
+	uri, found_uri := json.get_obj_field(document, "uri");
+	if !found_uri return;
+	change, index_success := json.get_array_item(changes, 0);
+	if !index_success return;
+	file_text, found_text := json.get_obj_field(change, "text");
+	if !found_text return;
+	file.update_uri(uri.v.str, file_text.v.str, true);
+}
+
+unhandled_request :: fn(method: string) {
+	log.write("Unhandled request: ");
+	log.write(method);
+}
+
+get_completion_start :: fn(f_buf: string, line: int, char: int) -> string {
+	f_buf := f_buf;
+	at := 0;
+	at_line := 1;
+	for at_line < line {
+		for f_buf.data[at] != '\n' {
+			at += 1;
+		}
+		at += 1;
+		at_line += 1;
+	}
+	at += char;
+	end := at;
+	start := end-1;
+	for !is_whitespace(f_buf.data[start]) { start -= 1; }
+	start += 1;
+	return string { end - start, &f_buf.data[start] };
+}
+
+
+do_completion :: fn(uri: string, line: int, char: int, id: json.Value, alloc: *mem.Allocator) {
+	if compile_info.modules.count == 0 {
+		log.write("No compile info");
+		return;
+	}
+
+	file := file.get_text(uri);
+	if file.count == 0 {
+		log.write("No file text");
+		return;
+	}
+
+	suggestions := mem.make_slice(recomp.Module, 6, alloc);
+	suggestion_count := 0;
+	is_complete := false;
+
+	start := get_completion_start(file, line, char);
+	log.write(start);
+	for m in compile_info.modules {
+		if m.name.count >= start.count {
+			comp := string { start.count, m.name.data };
+			if comp == start {
+				suggestions[suggestion_count] = m;
+				suggestion_count += 1;
+				if start.count == m.name.count is_complete = true;
+				if suggestion_count == 6 break;
+			}
+		}
+	}
+
+	main_obj := json.make_obj(alloc);
+	json.add_field(&main_obj, "jsonrpc", json.make_string("2.0"));
+	json.add_field(&main_obj, "id", id);
+
+	result := json.make_obj(alloc);
+	is_incomplete := json.make_bool(false);
+	json.add_field(&result, "isIncomplete", is_incomplete);
+
+	items := json.make_array(alloc);
+	for si in suggestion_count {
+		s := suggestions[si];
+		obj := json.make_obj(alloc);
+		json.add_field(&obj, "label", json.make_string(s.name)); // kind = module
+		json.add_field(&obj, "kind", json.make_integer(9)); // kind = module
+		json.add_item(&items, obj);
+	}
+
+	json.add_field(&result, "items", items);
+	json.add_field(&main_obj, "result", result);
+	str := json.print(main_obj, alloc);
+	respond(str);
+}
+
+is_whitespace :: fn(c: u32) -> bool {
+    return c == '\n' || c == '\r' || c == '\t' || c == ' ';
+}
+

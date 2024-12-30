@@ -82,6 +82,7 @@ remove_prefix :: fn(uri: string) -> string {
 }
 
 path_from_uri :: fn(uri: string, alloc: *mem.Allocator) -> string {
+	// @TODO: decode %20 for spaces
 	no_prefix := remove_prefix(uri);
 	b := str.create(alloc);
 	for c in no_prefix {

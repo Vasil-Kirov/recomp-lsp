@@ -1,9 +1,20 @@
+Got
+initialize
 Responded
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":{"openClose":true,"change":1},"completionProvider":{"triggerCharacters":[]}}}}
-/home/vasko/programming/recomp-lsp/build.rcp
-Compiled
-Opened File
-Read Something
-Parsing
-DATA
+Content-Length: 147
 
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":{"openClose":true,"change":2},"completionProvider":{"triggerCharacters":[]}}}}
+Parsing compiler info dump
+Got
+initialized
+initialized!
+Got
+textDocument\/didOpen
+Unhandled request: 
+textDocument\/didOpen
+Got
+textDocument\/didChange
+Got
+shutdown
+no params
+Got
